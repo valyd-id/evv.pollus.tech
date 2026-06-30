@@ -1,15 +1,34 @@
 import { motion } from "framer-motion";
-import { Mail, Lock, ArrowRight, Stethoscope } from "lucide-react";
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Mail, Lock, ArrowRight, Stethoscope, AlertTriangle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { getValydAuthUrl } from "@/lib/auth";
+
+const GOOGLE_ERRORS: Record<string, string> = {
+  google: "Google sign-in failed. Please try again.",
+  google_state: "Google sign-in could not be verified. Please try again.",
+  google_token: "Could not complete Google sign-in. Please try again.",
+  google_profile: "Could not read your Google profile. Please try again.",
+  google_not_configured: "Google sign-in isn't configured on the server yet.",
+};
 
 const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [params] = useSearchParams();
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    const err = params.get("error");
+    if (err) setErrorMsg(GOOGLE_ERRORS[err] ?? "Sign-in failed. Please try again.");
+  }, [params]);
 
   function handleValydLogin() {
     window.location.href = getValydAuthUrl();
+  }
+
+  function handleGoogleLogin() {
+    window.location.href = "/api/auth/google/start";
   }
 
   return (
@@ -43,6 +62,13 @@ const Login = () => {
                 Sign in to access your professional dashboard
               </p>
             </div>
+
+            {errorMsg && (
+              <div className="mb-5 flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+                <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+                <p className="text-sm text-foreground">{errorMsg}</p>
+              </div>
+            )}
 
             {/* Email/Password form (static) */}
             <form
@@ -102,9 +128,10 @@ const Login = () => {
               </div>
             </div>
 
-            {/* Google button (static) */}
+            {/* Google button */}
             <button
               type="button"
+              onClick={handleGoogleLogin}
               className="w-full flex items-center justify-center gap-3 rounded-lg border border-border bg-background px-4 py-2.5 text-sm font-medium text-foreground shadow-sm hover:bg-muted/50 active:scale-[0.98] transition-all mb-3"
             >
               <svg className="h-5 w-5" viewBox="0 0 24 24">

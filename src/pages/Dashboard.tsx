@@ -25,6 +25,7 @@ import FAQSection from "@/components/portal/FAQSection";
 import PortalFooter from "@/components/portal/PortalFooter";
 import LoginHistorySection from "@/components/portal/LoginHistorySection";
 import VerifySection from "@/components/portal/VerifySection";
+import VerifyShiftSection from "@/components/portal/VerifyShiftSection";
 import { useState } from "react";
 
 const container = {
@@ -381,6 +382,9 @@ const Dashboard = () => {
 
         {/* Identity Verification (Valyd Verify — Hosted) */}
         <VerifySection />
+
+        {/* Shift check via the Valyd account APIs (connects first on Google logins). */}
+        <VerifyShiftSection />
 
         {/* Login Activity */}
         <LoginHistorySection />

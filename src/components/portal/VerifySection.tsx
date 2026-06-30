@@ -46,6 +46,17 @@ interface FlowState {
 }
 
 const STORAGE_KEY = "valyd_verify_flow";
+
+// The identity hosted session runs these sub-checks in one pass; each gets its
+// own circle in the stepper, populated from the decision once the run finishes.
+const IDENTITY_CHECKS: { type: string; label: string; icon: typeof ScanFace }[] = [
+  { type: "id_verification", label: "ID", icon: IdCard },
+  { type: "liveness", label: "Liveness", icon: Eye },
+  { type: "face_match", label: "Face", icon: ScanFace },
+  { type: "age", label: "Age", icon: Cake },
+  { type: "location", label: "Location", icon: MapPin },
+];
+
 const STEPS: { key: WorkflowKey; label: string; description: string; icon: typeof ScanFace }[] = [
   {
     key: "identity",
@@ -59,16 +70,6 @@ const STEPS: { key: WorkflowKey; label: string; description: string; icon: typeo
     description: "Verify a professional license by state, type and number.",
     icon: BadgeCheck,
   },
-];
-
-// The identity hosted session runs these sub-checks in one pass; each gets its
-// own circle in the stepper, populated from the decision once the run finishes.
-const IDENTITY_CHECKS: { type: string; label: string; icon: typeof ScanFace }[] = [
-  { type: "id_verification", label: "ID", icon: IdCard },
-  { type: "liveness", label: "Liveness", icon: Eye },
-  { type: "face_match", label: "Face", icon: ScanFace },
-  { type: "age", label: "Age", icon: Cake },
-  { type: "location", label: "Location", icon: MapPin },
 ];
 
 const TERMINAL = ["APPROVED", "DECLINED", "ABANDONED", "EXPIRED"];
@@ -150,9 +151,7 @@ function CheckTable({ decision }: { decision: Decision | null }) {
           >
             <div className="min-w-0">
               <p className="text-sm font-semibold text-foreground">{prettyType(check.type)}</p>
-              {check.error?.message && (
-                <p className="text-xs text-destructive mt-0.5">{check.error.message}</p>
-              )}
+              {check.error?.message && <p className="text-xs text-destructive mt-0.5">{check.error.message}</p>}
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {score && <span className="text-xs text-muted-foreground tabular-nums">{score}</span>}
@@ -371,7 +370,7 @@ export default function VerifySection() {
       <div className="container mx-auto px-4 max-w-3xl">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
           <h3 className="text-sm font-heading font-semibold text-muted-foreground uppercase tracking-wider mb-6">
-            Identity Verification
+            Hosted Identity Verification
           </h3>
 
           <div className="rounded-2xl bg-card border border-border shadow-lg p-6 sm:p-8">
@@ -388,7 +387,6 @@ export default function VerifySection() {
               <div className="flex items-start justify-center min-w-[480px] px-2">
                 {IDENTITY_CHECKS.map((c, i) => {
                   const check = idState.isDone ? findCheck(idState.result?.decision, c.type) : null;
-                  // Resolve this sub-check's visual mode.
                   let circleClass = "bg-muted text-muted-foreground border-border";
                   let icon = <c.icon className="h-5 w-5" />;
                   if (idState.isPolling) {
@@ -409,9 +407,6 @@ export default function VerifySection() {
                     circleClass = "bg-primary/5 text-primary border-primary/40";
                   }
 
-                  // Connector after this node: green within identity when this
-                  // sub-check passed; the last one leads to License (green when
-                  // identity is approved overall).
                   const isLastIdentity = i === IDENTITY_CHECKS.length - 1;
                   const connectorGreen = isLastIdentity
                     ? idState.isApproved

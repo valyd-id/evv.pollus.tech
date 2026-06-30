@@ -18,6 +18,22 @@ const VERIFY_WORKFLOWS = {
 const VERIFY_WEBHOOK_SECRET = process.env.VALYD_VERIFY_WEBHOOK_SECRET || "";
 const APP_URL = (process.env.APP_URL || "http://localhost:8080").replace(/\/$/, "");
 
+// ─── Google OAuth (Authorization Code flow) — secret stays server-side ────────
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || `${APP_URL}/api/auth/google/callback`;
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  const out = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i > -1) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
 app.use(cors());
 
 // The Verify webhook signature is computed over the RAW request body, so this
@@ -67,7 +83,7 @@ app.post("/api/verify/webhook", express.raw({ type: "application/json" }), (req,
   }
 });
 
-app.use(express.json());
+app.use(express.json({ limit: "12mb" })); // base64 images can be large
 
 app.set("trust proxy", true);
 
@@ -377,6 +393,173 @@ app.get("/api/verify/history", (req, res) => {
   } catch (err) {
     console.error("GET /api/verify/history error:", err);
     return res.status(500).json({ success: false, error: "Internal server error" });
+  }
+});
+
+// ─── Valyd Verify standalone: face match (server-to-server, X-API-Key) ────────
+app.post("/api/verify/face-match", async (req, res) => {
+  try {
+    if (!verifyConfigured(res)) return;
+    const { image1, image2 } = req.body || {};
+    if (!image1 || !image2) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "missing_images", message: "Both image1 (reference) and image2 (selfie) are required" },
+      });
+    }
+    const { status, body } = await verifyFetch("/api/v2/face-match", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image1, image2 }),
+    });
+    return res.status(status).json(body);
+  } catch (err) {
+    console.error("POST /api/verify/face-match error:", err);
+    return res.status(502).json({ success: false, error: { code: "upstream_error", message: "Face match failed" } });
+  }
+});
+
+// ─── Valyd Verify standalone: liveness (face scan) ────────────────────────────
+app.post("/api/verify/liveness", async (req, res) => {
+  try {
+    if (!verifyConfigured(res)) return;
+    const { image } = req.body || {};
+    if (!image) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "missing_image", message: "A selfie image is required" },
+      });
+    }
+    const { status, body } = await verifyFetch("/api/v2/liveness", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image }),
+    });
+    return res.status(status).json(body);
+  } catch (err) {
+    console.error("POST /api/verify/liveness error:", err);
+    return res.status(502).json({ success: false, error: { code: "upstream_error", message: "Liveness check failed" } });
+  }
+});
+
+// ─── Valyd Verify standalone: age verification ────────────────────────────────
+app.post("/api/verify/age", async (req, res) => {
+  try {
+    if (!verifyConfigured(res)) return;
+    const { dob, bands } = req.body || {};
+    if (!dob) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "missing_dob", message: "dob (YYYY-MM-DD) is required" },
+      });
+    }
+    const { status, body } = await verifyFetch("/api/v2/age-verification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dob, bands: Array.isArray(bands) && bands.length ? bands : ["is_18_plus"] }),
+    });
+    return res.status(status).json(body);
+  } catch (err) {
+    console.error("POST /api/verify/age error:", err);
+    return res.status(502).json({ success: false, error: { code: "upstream_error", message: "Age verification failed" } });
+  }
+});
+
+// ─── Google OAuth ─────────────────────────────────────────────────────────────
+// Step 1 — redirect the user to Google's consent screen.
+app.get("/api/auth/google/start", (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.redirect(`${APP_URL}/login?error=google_not_configured`);
+  }
+  const state = crypto.randomBytes(16).toString("hex");
+  res.setHeader("Set-Cookie", `g_oauth_state=${state}; HttpOnly; Path=/; Max-Age=600; SameSite=Lax`);
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+    access_type: "online",
+    prompt: "select_account",
+  });
+  return res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+// Step 2 — Google redirects back here with a code; exchange it server-side.
+app.get("/api/auth/google/callback", async (req, res) => {
+  try {
+    const { code, state, error } = req.query;
+    if (error) return res.redirect(`${APP_URL}/login?error=google`);
+
+    const cookies = parseCookies(req);
+    if (!code || !state || state !== cookies.g_oauth_state) {
+      return res.redirect(`${APP_URL}/login?error=google_state`);
+    }
+
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: String(code),
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: GOOGLE_REDIRECT_URI,
+        grant_type: "authorization_code",
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) return res.redirect(`${APP_URL}/login?error=google_token`);
+
+    const profRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const p = await profRes.json();
+    if (!p.sub) return res.redirect(`${APP_URL}/login?error=google_profile`);
+
+    const user = {
+      id: `google_${p.sub}`,
+      email: p.email || null,
+      name: p.name || null,
+      full_name: p.name || null,
+      first_name: p.given_name || null,
+      last_name: p.family_name || null,
+      username: p.email ? p.email.split("@")[0] : null,
+      avatar_url: p.picture || null,
+      // Google only confirms the email address — it does NOT perform identity
+      // (government-ID) verification, so this stays false for Google logins.
+      email_verified: Boolean(p.email_verified),
+      id_verified: false,
+      provider: "google",
+    };
+
+    // Record the login so it shows up in the dashboard history.
+    try {
+      const ipAddress = normalizeIp(pickClientIp(req));
+      const location = await resolveLocation(ipAddress);
+      insertLogin.run({
+        user_id: String(user.id),
+        email: user.email,
+        username: user.username,
+        full_name: user.full_name,
+        pollus_id: null,
+        country: location.country,
+        state: location.state,
+        city: location.city,
+        is_doctor: 0,
+        ip_address: ipAddress,
+        user_agent: req.get("user-agent") || null,
+      });
+    } catch (logErr) {
+      console.error("google login record error:", logErr);
+    }
+
+    // Clear the CSRF state cookie and hand the profile to the SPA.
+    res.setHeader("Set-Cookie", `g_oauth_state=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax`);
+    const encoded = encodeURIComponent(Buffer.from(JSON.stringify(user)).toString("base64"));
+    return res.redirect(`${APP_URL}/auth/google?u=${encoded}`);
+  } catch (err) {
+    console.error("GET /api/auth/google/callback error:", err);
+    return res.redirect(`${APP_URL}/login?error=google`);
   }
 });
 

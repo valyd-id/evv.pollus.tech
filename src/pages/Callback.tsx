@@ -2,7 +2,14 @@ import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Stethoscope, CheckCircle, XCircle } from "lucide-react";
-import { useAuth } from "@/lib/auth";
+import {
+  useAuth,
+  linkValydAccount,
+  verifyShiftWithValydOidc,
+  VALYD_LINK_FLAG,
+  VALYD_SHIFT_FLAG,
+  VALYD_SHIFT_STATE,
+} from "@/lib/auth";
 
 const Callback = () => {
   const [searchParams] = useSearchParams();
@@ -10,14 +17,61 @@ const Callback = () => {
   const { login, isAuthenticated } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(true);
+  const [linking, setLinking] = useState(
+    localStorage.getItem(VALYD_LINK_FLAG) === "1" || localStorage.getItem(VALYD_SHIFT_FLAG) === "1",
+  );
 
   useEffect(() => {
+    const code = searchParams.get("code");
+    const linkMode = localStorage.getItem(VALYD_LINK_FLAG) === "1";
+    const shiftMode = localStorage.getItem(VALYD_SHIFT_FLAG) === "1";
+
+    // Shift verification — re-login with Valyd, read the IdP face/verification
+    // result, keep the current app session.
+    if (shiftMode && code) {
+      localStorage.removeItem(VALYD_SHIFT_FLAG);
+      // CSRF: the OIDC state must match what we sent.
+      const expectedState = localStorage.getItem(VALYD_SHIFT_STATE);
+      localStorage.removeItem(VALYD_SHIFT_STATE);
+      if (expectedState && searchParams.get("state") !== expectedState) {
+        setError("Shift verification could not be validated (state mismatch). Please try again.");
+        setProcessing(false);
+        return;
+      }
+      setLinking(true);
+      verifyShiftWithValydOidc(code)
+        .then(() => {
+          setProcessing(false);
+          setTimeout(() => navigate("/dashboard", { replace: true }), 600);
+        })
+        .catch((err) => {
+          setError(err.message || "Could not verify your shift with Valyd.");
+          setProcessing(false);
+        });
+      return;
+    }
+
+    // Linking a Valyd account to an existing (e.g. Google) session — do NOT
+    // replace the current app session.
+    if (linkMode && code) {
+      localStorage.removeItem(VALYD_LINK_FLAG);
+      setLinking(true);
+      linkValydAccount(code)
+        .then(() => {
+          setProcessing(false);
+          setTimeout(() => navigate("/dashboard", { replace: true }), 600);
+        })
+        .catch((err) => {
+          setError(err.message || "Could not connect your Valyd account.");
+          setProcessing(false);
+        });
+      return;
+    }
+
     if (isAuthenticated) {
       navigate("/dashboard", { replace: true });
       return;
     }
-
-    const code = searchParams.get("code");
 
     if (!code) {
       setError("No authorization code received. Please try logging in again.");
@@ -63,9 +117,11 @@ const Callback = () => {
               <div className="flex flex-col items-center gap-4">
                 <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary border-t-transparent" />
                 <div>
-                  <h2 className="text-lg font-heading font-bold text-foreground">Authenticating</h2>
+                  <h2 className="text-lg font-heading font-bold text-foreground">
+                    {linking ? "Connecting Valyd" : "Authenticating"}
+                  </h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Verifying your identity with Valyd...
+                    {linking ? "Linking your Valyd account..." : "Verifying your identity with Valyd..."}
                   </p>
                 </div>
               </div>
