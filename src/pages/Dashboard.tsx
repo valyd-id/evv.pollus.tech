@@ -24,6 +24,7 @@ import HelpSection from "@/components/portal/HelpSection";
 import FAQSection from "@/components/portal/FAQSection";
 import PortalFooter from "@/components/portal/PortalFooter";
 import LoginHistorySection from "@/components/portal/LoginHistorySection";
+import VerifySection from "@/components/portal/VerifySection";
 import { useState } from "react";
 
 const container = {
@@ -377,6 +378,9 @@ const Dashboard = () => {
             )}
           </div>
         </div>
+
+        {/* Identity Verification (Valyd Verify — Hosted) */}
+        <VerifySection />
 
         {/* Login Activity */}
         <LoginHistorySection />

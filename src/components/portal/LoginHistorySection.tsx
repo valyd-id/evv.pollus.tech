@@ -1,6 +1,19 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Clock, Globe, Monitor, ChevronDown, Hash, Calendar, MapPin } from "lucide-react";
+import {
+  Clock,
+  Globe,
+  Monitor,
+  ChevronDown,
+  Hash,
+  Calendar,
+  MapPin,
+  ScanFace,
+  BadgeCheck,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+} from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
 interface LoginRecord {
@@ -18,6 +31,29 @@ interface LoginRecord {
   user_agent: string | null;
   logged_in_at: string;
 }
+
+interface VerifyRecord {
+  session_id: string;
+  workflow: string | null;
+  status: string;
+  updated_at: string;
+}
+
+type FeedItem =
+  | { kind: "login"; id: string; time: string; login: LoginRecord }
+  | { kind: "verify"; id: string; time: string; verify: VerifyRecord };
+
+const verifyMeta: Record<string, { label: string; icon: typeof ScanFace }> = {
+  identity: { label: "Identity Verification", icon: ScanFace },
+  license: { label: "License Verification", icon: BadgeCheck },
+};
+
+const verifyStatusStyles: Record<string, { tone: string; icon: typeof CheckCircle2 }> = {
+  APPROVED: { tone: "bg-accent/15 text-accent", icon: CheckCircle2 },
+  DECLINED: { tone: "bg-destructive/15 text-destructive", icon: XCircle },
+  ABANDONED: { tone: "bg-warning/15 text-warning", icon: AlertTriangle },
+  EXPIRED: { tone: "bg-warning/15 text-warning", icon: AlertTriangle },
+};
 
 const container = {
   hidden: {},
@@ -71,6 +107,7 @@ function formatLocation(login: LoginRecord): string {
 export default function LoginHistorySection() {
   const { user } = useAuth();
   const [logins, setLogins] = useState<LoginRecord[]>([]);
+  const [verifs, setVerifs] = useState<VerifyRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [showAll, setShowAll] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -78,23 +115,41 @@ export default function LoginHistorySection() {
 
   const userId = user?.id ? String(user.id) : null;
 
-  useEffect(() => {
+  const loadActivity = useCallback(async () => {
     if (!userId) {
       setLoading(false);
       return;
     }
-
-    fetch(`/api/logins?user_id=${encodeURIComponent(userId)}&limit=50`)
-      .then((r) => r.json())
-      .then((res) => {
-        if (res.success) {
-          setLogins(res.data);
-          setTotal(res.total);
-        }
-      })
-      .catch(() => setError(true))
-      .finally(() => setLoading(false));
+    try {
+      await Promise.all([
+        fetch(`/api/logins?user_id=${encodeURIComponent(userId)}&limit=50`)
+          .then((r) => r.json())
+          .then((res) => {
+            if (res.success) {
+              setLogins(res.data);
+              setTotal(res.total);
+            }
+          }),
+        fetch(`/api/verify/history?user_id=${encodeURIComponent(userId)}`)
+          .then((r) => r.json())
+          .then((res) => {
+            if (res.success) setVerifs(res.data);
+          }),
+      ]);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [userId]);
+
+  useEffect(() => {
+    loadActivity();
+    // VerifySection fires this when a verification reaches a terminal state.
+    const onUpdate = () => loadActivity();
+    window.addEventListener("valyd-verify-updated", onUpdate);
+    return () => window.removeEventListener("valyd-verify-updated", onUpdate);
+  }, [loadActivity]);
 
   if (loading) {
     return (
@@ -116,7 +171,23 @@ export default function LoginHistorySection() {
     return d.toDateString() === now.toDateString();
   }).length;
 
-  const displayLogins = showAll ? logins : logins.slice(0, 10);
+  // Merge logins + verifications into one time-sorted activity feed.
+  const feed: FeedItem[] = [
+    ...logins.map((login): FeedItem => ({
+      kind: "login",
+      id: `login-${login.id}`,
+      time: login.logged_in_at,
+      login,
+    })),
+    ...verifs.map((verify): FeedItem => ({
+      kind: "verify",
+      id: `verify-${verify.session_id}`,
+      time: verify.updated_at,
+      verify,
+    })),
+  ].sort((a, b) => new Date(b.time + "Z").getTime() - new Date(a.time + "Z").getTime());
+
+  const displayFeed = showAll ? feed : feed.slice(0, 10);
   const uniquePlaces = Array.from(new Set(logins.map((login) => formatLocation(login)))).filter(
     (place) => place !== "Unknown location"
   );
@@ -162,60 +233,103 @@ export default function LoginHistorySection() {
             </div>
 
             <motion.div variants={container} initial="hidden" animate="show">
-              {displayLogins.length === 0 ? (
+              {displayFeed.length === 0 ? (
                 <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-                  No login history yet.
+                  No activity yet.
                 </div>
               ) : (
                 <div className="divide-y divide-border">
-                  {displayLogins.map((login) => (
-                    <motion.div
-                      key={login.id}
-                      variants={item}
-                      className="px-5 py-3.5 flex items-center gap-4 hover:bg-muted/30 transition-colors"
-                    >
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 shrink-0">
-                        <Clock className="h-4 w-4 text-primary" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-foreground">
-                          {formatDate(login.logged_in_at)}
-                        </p>
-                        <div className="flex items-center gap-3 mt-0.5">
-                          <span className="text-xs text-muted-foreground flex items-center gap-1">
-                            <MapPin className="h-3 w-3" />
-                            {formatLocation(login)}
-                          </span>
-                          {login.ip_address && (
-                            <span className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Globe className="h-3 w-3" />
-                              {login.ip_address}
-                            </span>
-                          )}
-                          {login.user_agent && (
-                            <span className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Monitor className="h-3 w-3" />
-                              {parseUserAgent(login.user_agent)}
-                            </span>
-                          )}
+                  {displayFeed.map((entry) =>
+                    entry.kind === "login" ? (
+                      <motion.div
+                        key={entry.id}
+                        variants={item}
+                        className="px-5 py-3.5 flex items-center gap-4 hover:bg-muted/30 transition-colors"
+                      >
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 shrink-0">
+                          <Clock className="h-4 w-4 text-primary" />
                         </div>
-                      </div>
-                      <span className="text-xs text-muted-foreground whitespace-nowrap">
-                        {timeAgo(login.logged_in_at)}
-                      </span>
-                    </motion.div>
-                  ))}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-foreground">
+                            {formatDate(entry.login.logged_in_at)}
+                          </p>
+                          <div className="flex items-center gap-3 mt-0.5">
+                            <span className="text-xs text-muted-foreground flex items-center gap-1">
+                              <MapPin className="h-3 w-3" />
+                              {formatLocation(entry.login)}
+                            </span>
+                            {entry.login.ip_address && (
+                              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Globe className="h-3 w-3" />
+                                {entry.login.ip_address}
+                              </span>
+                            )}
+                            {entry.login.user_agent && (
+                              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Monitor className="h-3 w-3" />
+                                {parseUserAgent(entry.login.user_agent)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span className="text-xs text-muted-foreground whitespace-nowrap">
+                          {timeAgo(entry.login.logged_in_at)}
+                        </span>
+                      </motion.div>
+                    ) : (
+                      (() => {
+                        const meta = verifyMeta[entry.verify.workflow ?? ""] ?? {
+                          label: "Verification",
+                          icon: BadgeCheck,
+                        };
+                        const st = verifyStatusStyles[entry.verify.status] ?? {
+                          tone: "bg-muted text-muted-foreground",
+                          icon: Clock,
+                        };
+                        const MetaIcon = meta.icon;
+                        const StatusIcon = st.icon;
+                        return (
+                          <motion.div
+                            key={entry.id}
+                            variants={item}
+                            className="px-5 py-3.5 flex items-center gap-4 hover:bg-muted/30 transition-colors"
+                          >
+                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 shrink-0">
+                              <MetaIcon className="h-4 w-4 text-accent" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-foreground">{meta.label}</p>
+                              <div className="flex items-center gap-3 mt-0.5">
+                                <span
+                                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${st.tone}`}
+                                >
+                                  <StatusIcon className="h-3 w-3" />
+                                  {entry.verify.status.charAt(0) + entry.verify.status.slice(1).toLowerCase()}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  {formatDate(entry.verify.updated_at)}
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {timeAgo(entry.verify.updated_at)}
+                            </span>
+                          </motion.div>
+                        );
+                      })()
+                    ),
+                  )}
                 </div>
               )}
             </motion.div>
 
-            {total > 10 && !showAll && (
+            {feed.length > 10 && !showAll && (
               <div className="px-5 py-3 border-t border-border">
                 <button
                   onClick={() => setShowAll(true)}
                   className="w-full flex items-center justify-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
                 >
-                  Show all {total} sessions
+                  Show all {feed.length} sessions
                   <ChevronDown className="h-3.5 w-3.5" />
                 </button>
               </div>

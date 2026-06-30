@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Server secrets (Valyd Verify API key, webhook secret)
+server/.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

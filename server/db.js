@@ -27,6 +27,20 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_user_logins_user_id ON user_logins(user_id);
   CREATE INDEX IF NOT EXISTS idx_user_logins_logged_in_at ON user_logins(logged_in_at);
+
+  CREATE TABLE IF NOT EXISTS verification_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    TEXT NOT NULL UNIQUE,
+    vendor_data   TEXT,
+    workflow      TEXT,
+    status        TEXT,
+    event_type    TEXT,
+    decision_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_verification_sessions_vendor ON verification_sessions(vendor_data);
 `);
 
 // Backfill schema updates for existing databases.
@@ -36,6 +50,11 @@ if (!existingColumns.includes("city")) {
 }
 if (!existingColumns.includes("state")) {
   db.exec("ALTER TABLE user_logins ADD COLUMN state TEXT");
+}
+
+const verifyColumns = db.prepare("PRAGMA table_info(verification_sessions)").all().map((col) => col.name);
+if (!verifyColumns.includes("workflow")) {
+  db.exec("ALTER TABLE verification_sessions ADD COLUMN workflow TEXT");
 }
 
 export default db;
