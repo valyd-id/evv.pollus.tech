@@ -10,6 +10,9 @@ import {
   AlertTriangle,
   ShieldCheck,
   ArrowRight,
+  User,
+  Mail,
+  Hash,
 } from "lucide-react";
 import {
   useAuth,
@@ -76,6 +79,15 @@ export default function VerifyShiftSection() {
   const faceMatch = ver?.face_match;
   const verifiedCredential = licenses.find((l) => l.status && /active|verified/i.test(l.status));
   const hasCredential = licenses.length > 0;
+
+  const acct = result?.user;
+  const acctName =
+    acct?.full_name ||
+    acct?.name ||
+    `${acct?.first_name || ""} ${acct?.last_name || ""}`.trim() ||
+    acct?.username ||
+    "Valyd account";
+  const acctId = acct?.pollus_id || acct?.anon_id || acct?.sub;
 
   return (
     <section className="py-10">
@@ -157,6 +169,29 @@ export default function VerifyShiftSection() {
 
             {result && (
               <div className="mt-6">
+                {/* Which Valyd account the data was read from */}
+                <p className="text-xs font-heading font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                  Valyd account
+                </p>
+                <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl bg-muted/40 border border-border px-4 py-3">
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                    <User className="h-4 w-4 text-primary" />
+                    {acctName}
+                  </span>
+                  {acct?.email && (
+                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Mail className="h-3.5 w-3.5" />
+                      {acct.email}
+                    </span>
+                  )}
+                  {acctId && (
+                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
+                      <Hash className="h-3.5 w-3.5" />
+                      {acctId}
+                    </span>
+                  )}
+                </div>
+
                 <p className="text-xs font-heading font-semibold text-muted-foreground uppercase tracking-wider mb-3">
                   Result
                 </p>
