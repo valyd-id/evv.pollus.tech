@@ -4,15 +4,36 @@ import { useNavigate } from "react-router-dom";
 const VALYD_CLIENT_ID = import.meta.env.VITE_VALYD_CLIENT_ID;
 const VALYD_CLIENT_SECRET = import.meta.env.VITE_VALYD_CLIENT_SECRET;
 const VALYD_BASE_URL = import.meta.env.VITE_VALYD_BASE_URL;
-const VALYD_SCOPES = "profile verifications doctor_license";
+// Standard OIDC scope: "openid" is mandatory at the OIDC authorize endpoint.
+const VALYD_SCOPES = "openid profile verifications doctor_license";
 
 function getRedirectUrl() {
   return `${window.location.origin}/callback`;
 }
 
+function randomHex(bytes = 16) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Standard OIDC authorize URL (the legacy TPSSO /auth entry is gone). The random
+ * `state` is stored in sessionStorage and compared against the state the IdP echoes
+ * back on the callback (standard OAuth CSRF); `nonce` is bound into the id_token.
+ */
 export function getValydAuthUrl() {
-  const redirectUrl = getRedirectUrl();
-  return `${VALYD_BASE_URL}/auth?client_id=${VALYD_CLIENT_ID}&redirect_url=${redirectUrl}&scope=${encodeURIComponent(VALYD_SCOPES)}`;
+  const state = randomHex();
+  const nonce = randomHex();
+  sessionStorage.setItem("dh_oidc_flow", JSON.stringify({ state, nonce }));
+  const u = new URL(`${VALYD_BASE_URL}/api/auth/oidc/authorize`);
+  u.searchParams.set("client_id", VALYD_CLIENT_ID);
+  u.searchParams.set("redirect_uri", getRedirectUrl());
+  u.searchParams.set("response_type", "code");
+  u.searchParams.set("scope", VALYD_SCOPES);
+  u.searchParams.set("state", state);
+  u.searchParams.set("nonce", nonce);
+  return u.toString();
 }
 
 export interface ValydUser {
@@ -79,7 +100,7 @@ interface AuthState {
   isLoading: boolean;
   isDoctor: boolean;
   doctorLicense: DoctorLicense | null;
-  login: (code: string) => Promise<void>;
+  login: (code: string, state?: string | null) => Promise<void>;
   logout: () => void;
   fetchUserInfo: () => Promise<void>;
   checkDoctorLicense: () => Promise<void>;
@@ -184,29 +205,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [accessToken, refreshToken, user, fetchDoctorLicense]);
 
-  async function login(code: string) {
+  async function login(code: string, state?: string | null) {
     setIsLoading(true);
     try {
-      const tokenRes = await fetch(`${VALYD_BASE_URL}/api/auth/tpsso/token`, {
+      // Standard OAuth CSRF: the state we generated before redirecting must come back.
+      let flow: { state?: string; nonce?: string } = {};
+      try {
+        flow = JSON.parse(sessionStorage.getItem("dh_oidc_flow") || "{}");
+      } catch {
+        // ignore
+      }
+      sessionStorage.removeItem("dh_oidc_flow");
+      if (!flow.state || !state || state !== flow.state) {
+        throw new Error("Login session mismatch. Please try logging in again.");
+      }
+
+      // Standard OIDC token endpoint: form-encoded request, TOP-LEVEL JSON response
+      // (not wrapped in {success,data}) and no embedded user snapshot.
+      const tokenRes = await fetch(`${VALYD_BASE_URL}/api/auth/oidc/token`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id: VALYD_CLIENT_ID,
           client_secret: VALYD_CLIENT_SECRET,
+          redirect_uri: getRedirectUrl(),
           code,
         }),
       });
 
       const tokenData = await tokenRes.json();
 
-      if (!tokenData.success) {
-        throw new Error(tokenData.error?.message || "Token exchange failed");
+      if (!tokenRes.ok || !tokenData.access_token) {
+        throw new Error(tokenData.error_description || tokenData.error || "Token exchange failed");
       }
 
-      const at = tokenData.data.access_token;
-      const rt = tokenData.data.refresh_token;
-      const tokenUser = tokenData.data.user as ValydUser;
+      const at = tokenData.access_token as string;
+      const rt = tokenData.refresh_token as string;
+
+      // The id_token nonce must match the one we generated (token minted for THIS login).
+      try {
+        const payload = String(tokenData.id_token || "").split(".")[1];
+        const claims = payload ? JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) : null;
+        if (flow.nonce && claims?.nonce && claims.nonce !== flow.nonce) {
+          throw new Error("Login session mismatch. Please try logging in again.");
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith("Login session mismatch")) throw e;
+        // Undecodable id_token: proceed — possession of the code + state check still hold.
+      }
+
+      // OIDC carries no user snapshot in the token response — fetch it from userinfo
+      // (the tpsso RESOURCE endpoints are unchanged and accept OIDC access tokens).
+      let tokenUser: ValydUser = {};
+      const infoRes = await fetch(`${VALYD_BASE_URL}/api/auth/tpsso/userinfo`, {
+        headers: { Accept: "application/json", Authorization: `Bearer ${at}` },
+      });
+      const infoData = await infoRes.json().catch(() => ({}));
+      if (infoRes.ok && infoData.success && infoData.data) {
+        tokenUser = infoData.data as ValydUser;
+      }
 
       setAccessToken(at);
       setRefreshToken(rt);

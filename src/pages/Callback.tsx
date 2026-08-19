@@ -18,6 +18,7 @@ const Callback = () => {
     }
 
     const code = searchParams.get("code");
+    const state = searchParams.get("state");
 
     if (!code) {
       setError("No authorization code received. Please try logging in again.");
@@ -25,7 +26,7 @@ const Callback = () => {
       return;
     }
 
-    login(code)
+    login(code, state)
       .then(() => {
         setProcessing(false);
         setTimeout(() => navigate("/dashboard", { replace: true }), 800);
